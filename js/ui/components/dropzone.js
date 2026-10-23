@@ -1,4 +1,5 @@
 import { icon } from './icon.js';
+import { escapeHtml } from '../../utils.js';
 
 export function createDropzone(container, options = {}) {
   const {
@@ -32,9 +33,10 @@ export function createDropzone(container, options = {}) {
   inputEl.addEventListener('change', () => {
     const files = Array.from(inputEl.files);
     if (files.length > 0) {
-      showFileInfo(zoneEl, files);
+      showFileInfo(zoneEl, files, inputEl);
       onFiles(files);
     }
+    inputEl.value = '';
   });
 
   // Drag events
@@ -52,7 +54,7 @@ export function createDropzone(container, options = {}) {
     zoneEl.classList.remove('dropzone--dragover');
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      showFileInfo(zoneEl, files);
+      showFileInfo(zoneEl, files, inputEl);
       onFiles(files);
     }
   });
@@ -74,7 +76,7 @@ export function createDropzone(container, options = {}) {
   };
 }
 
-function showFileInfo(zoneEl, files) {
+function showFileInfo(zoneEl, files, inputEl) {
   zoneEl.classList.add('dropzone--has-file');
   const names = files.map(f => f.name).join(', ');
   const size = files.reduce((s, f) => s + f.size, 0);
@@ -82,10 +84,12 @@ function showFileInfo(zoneEl, files) {
   zoneEl.innerHTML = `
     <div class="dropzone__file-info">
       ${icon('check-circle', 20)}
-      <span>${names}</span>
+      <span>${escapeHtml(names)}</span>
       <span style="color: var(--color-text-muted);">(${sizeStr})</span>
     </div>
   `;
+  // Keep the file input in the DOM so more files can be added afterwards
+  zoneEl.prepend(inputEl);
   if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 

@@ -6,11 +6,19 @@
   <title>Claude Migration Assistant</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23c4603c'/><path d='M8 16h6l2-6 4 12 2-6h6' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 
-  <!-- CDN Dependencies (defer to avoid render-blocking) -->
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/marked@17/lib/marked.umd.min.js"></script>
-  <script defer src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <!--
+    Content Security Policy: export data must never leave the browser.
+    connect-src 'none' blocks fetch/XHR/WebSocket/beacon exfiltration even if an XSS slips through.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+
+  <!-- CDN Dependencies: exact versions + Subresource Integrity (defer to avoid render-blocking) -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@17.0.1/lib/marked.umd.js" integrity="sha384-KwzR5her+zXi/Bzz4PVrBjkrjsBZy9adZtt3jA6Jgj3/hzPihRUV6HqMONpTe7Ll" crossorigin="anonymous"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js" integrity="sha384-JEyTNhjM6R1ElGoJns4U2Ln4ofPcqzSsynQkmEc/KGy6336qAZl70tDLufbkla+3" crossorigin="anonymous"></script>
+  <script defer src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js" integrity="sha384-hJnF5AwidE18GSWTAGHv3ByzzvfNZ1Tcx5y1UUV3WkauuMCEzBJBMSwSt/PUPXnM" crossorigin="anonymous"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js" integrity="sha384-PlRSzpewlarQuj5alIadXwjNUX+2eNMKwr0f07ShWYLy8B6TjEbm7ZlcN/ScSbwy" crossorigin="anonymous"></script>
 
   <!-- Styles -->
   <link rel="stylesheet" href="css/variables.css">

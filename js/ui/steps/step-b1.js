@@ -5,10 +5,10 @@ import { PROMPTS } from '../../data/prompts.js';
 import { icon } from '../components/icon.js';
 
 export function render(container, stepState, globalState) {
-  const isAdmin = globalState.exportData.exportMode === 'admin';
+  // memories.json is present in both admin and newer personal exports
   const adminMemory = globalState.exportData.userMemory;
 
-  if (isAdmin && adminMemory) {
+  if (adminMemory) {
     renderAdminMode(container, stepState, adminMemory);
   } else {
     renderManualMode(container, stepState);
@@ -19,7 +19,7 @@ function renderAdminMode(container, stepState, memoryText) {
   container.innerHTML = `
     <div class="info-box info-box--success" style="margin-bottom: var(--space-lg);">
       <span class="info-box__icon">${icon('check-circle', 16)}</span>
-      <span>Memory was auto-populated from the admin export. No manual prompt needed.</span>
+      <span>Memory was auto-populated from your export (memories.json). The manual prompt is optional -- use it to also capture memory edits.</span>
     </div>
 
     <div class="step-section">
@@ -44,7 +44,7 @@ function renderAdminMode(container, stepState, memoryText) {
   `;
 
   createCopyableBlock(container.querySelector('#b1-memory-block'), {
-    text: memoryText,
+    text: typeof memoryText === 'string' ? memoryText : JSON.stringify(memoryText, null, 2),
     label: 'Memory content'
   });
 

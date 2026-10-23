@@ -58,9 +58,9 @@ export function render(container, stepState, globalState) {
     item.className = 'artifact-list-item';
     item.innerHTML = `
       <span class="artifact-list-item__title">${escapeHtml(art.title)}</span>
-      <span class="artifact-list-item__type">${art.extension}</span>
+      <span class="artifact-list-item__type">${escapeHtml(art.extension)}</span>
       <label class="toggle" style="width: 80px; justify-content: center;">
-        <input type="checkbox" class="toggle__input" data-artifact-id="${art.id}" ${isImportant ? 'checked' : ''}>
+        <input type="checkbox" class="toggle__input" data-artifact-id="${escapeHtml(art.id)}" ${isImportant ? 'checked' : ''}>
         <span class="toggle__track"></span>
       </label>
     `;

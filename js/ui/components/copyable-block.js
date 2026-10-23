@@ -9,7 +9,7 @@ export function createCopyableBlock(container, options = {}) {
   container.innerHTML = `
     <div class="copyable-block" id="${id}">
       <div class="copyable-block__header">
-        <span class="copyable-block__label">${label}</span>
+        <span class="copyable-block__label">${escapeHtml(label)}</span>
         <button class="copyable-block__copy-btn" id="${id}-btn">
           ${icon('clipboard', 14)}
           <span>Copy</span>

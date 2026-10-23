@@ -22,6 +22,8 @@ function parseConversation(obj) {
     created_at: obj.created_at || obj.createdAt || '',
     updated_at: obj.updated_at || obj.updatedAt || obj.created_at || '',
     chat_messages: [],
+    summary: obj.summary || '',
+    account_uuid: obj.account?.uuid || null,
     project_uuid: obj.project_uuid || obj.project?.uuid || null,
     model: obj.model || null,
     is_starred: obj.is_starred || false
@@ -53,8 +55,9 @@ function parseMessage(obj) {
     content: [],
     created_at: obj.created_at || obj.createdAt || '',
     updated_at: obj.updated_at || obj.updatedAt || '',
-    attachments: obj.attachments || [],
-    files: obj.files || []
+    parent_message_uuid: obj.parent_message_uuid || null,
+    attachments: Array.isArray(obj.attachments) ? obj.attachments : [],
+    files: Array.isArray(obj.files) ? obj.files : (Array.isArray(obj.files_v2) ? obj.files_v2 : [])
   };
 
   // Skip system messages
@@ -86,16 +89,18 @@ function parseMessage(obj) {
 function parseContentItem(item) {
   if (!item || typeof item !== 'object') return null;
 
+  // Spread first so fields we don't interpret (citations, timestamps, etc.) survive
   if (item.type === 'text') {
-    return { type: 'text', text: item.text || '' };
+    return { ...item, type: 'text', text: item.text || '' };
   }
 
   if (item.type === 'thinking') {
-    return { type: 'thinking', thinking: item.thinking || item.text || '' };
+    return { ...item, type: 'thinking', thinking: item.thinking || item.text || '' };
   }
 
   if (item.type === 'tool_use') {
     return {
+      ...item,
       type: 'tool_use',
       name: item.name || '',
       id: item.id || '',
@@ -105,9 +110,10 @@ function parseContentItem(item) {
 
   if (item.type === 'tool_result') {
     return {
+      ...item,
       type: 'tool_result',
       name: item.name || '',
-      content: item.content || [],
+      content: item.content ?? [],
       is_error: item.is_error || false
     };
   }
@@ -148,7 +154,11 @@ export function buildConversationIndex(conversations) {
       m.content.some(c => c.type === 'tool_use' && c.name === 'artifacts') ||
       (m.text && m.text.includes('<antArtifact'))
     ),
-    project_uuid: conv.project_uuid
+    has_attachments: conv.chat_messages.some(m => m.attachments.length > 0 || m.files.length > 0),
+    project_uuid: conv.project_uuid,
+    model: conv.model,
+    is_starred: conv.is_starred,
+    summary: conv.summary
   }));
 }
 

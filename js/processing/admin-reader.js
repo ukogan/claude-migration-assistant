@@ -22,7 +22,7 @@ export async function readAdminExport(files, onProgress = () => {}) {
 
   for (const file of files) {
     const name = file.name.toLowerCase();
-    if (name in EXPECTED_FILES) {
+    if (Object.hasOwn(EXPECTED_FILES, name)) {
       fileMap.set(name, file);
     }
   }
@@ -121,7 +121,8 @@ export function buildUserList(users, conversations) {
 
 /**
  * Filters admin export data for a specific user UUID.
- * Returns conversations, memory text, and projects for that user.
+ * Returns conversations, memory text, project memories, and projects for that user.
+ * Projects include those the user created AND those their conversations belong to.
  */
 export function filterByUser(adminData, userUuid) {
   const conversations = adminData.conversations.filter(
@@ -131,11 +132,53 @@ export function filterByUser(adminData, userUuid) {
   const memoryEntry = adminData.memories.find(
     m => m.account_uuid === userUuid
   );
-  const memory = memoryEntry ? memoryEntry.conversations_memory : null;
+  const { memory, projectMemories } = readMemoryEntry(memoryEntry);
 
-  const projects = adminData.projects.filter(
-    p => p.creator && p.creator.uuid === userUuid
+  const usedProjectUuids = new Set(
+    conversations.map(c => c.project_uuid || c.project?.uuid).filter(Boolean)
+  );
+  const projects = attachProjectMemories(
+    adminData.projects.filter(p =>
+      (p.creator && p.creator.uuid === userUuid) || usedProjectUuids.has(p.uuid)
+    ),
+    projectMemories
   );
 
-  return { conversations, memory, projects };
+  return { conversations, memory, projectMemories, projects, memoryEntry: memoryEntry || null };
+}
+
+/**
+ * Resolves memory and projects from a personal (single-account) export.
+ */
+export function resolvePersonalData({ users = [], memories = [], projects = [] }) {
+  const accountUuid = users.length === 1 ? users[0].uuid : null;
+  const memoryEntry = (accountUuid && memories.find(m => m.account_uuid === accountUuid))
+    || (memories.length === 1 ? memories[0] : null);
+  const { memory, projectMemories } = readMemoryEntry(memoryEntry);
+  return {
+    memory,
+    projectMemories,
+    projects: attachProjectMemories(projects, projectMemories),
+    memoryEntry: memoryEntry || null
+  };
+}
+
+function readMemoryEntry(entry) {
+  if (!entry || typeof entry !== 'object') return { memory: null, projectMemories: {} };
+  const memory = typeof entry.conversations_memory === 'string' && entry.conversations_memory.trim()
+    ? entry.conversations_memory
+    : null;
+  const projectMemories = entry.project_memories && typeof entry.project_memories === 'object'
+    ? entry.project_memories
+    : {};
+  return { memory, projectMemories };
+}
+
+function attachProjectMemories(projects, projectMemories) {
+  return projects
+    .filter(p => p && typeof p === 'object')
+    .map(p => {
+      const mem = Object.hasOwn(projectMemories, p.uuid) ? projectMemories[p.uuid] : null;
+      return mem ? { ...p, memory: mem } : p;
+    });
 }

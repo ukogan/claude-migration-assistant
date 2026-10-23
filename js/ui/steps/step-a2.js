@@ -3,13 +3,14 @@ import { escapeHtml } from '../../utils.js';
 import { createDropzone } from '../components/dropzone.js';
 import { createProgressIndicator } from '../components/progress-indicator.js';
 import { icon } from '../components/icon.js';
-import { readExportZip } from '../../processing/zip-reader.js';
+import { readExportZips } from '../../processing/zip-reader.js';
+import { parseManifest } from '../../processing/manifest.js';
 import { parseConversations, buildConversationIndex, categorizeByAge } from '../../processing/conversation-parser.js';
 import { extractArtifacts, buildArtifactIndex } from '../../processing/artifact-extractor.js';
 import { generateContextDocument } from '../../processing/context-generator.js';
 import { generateMemoryScript } from '../../processing/memory-generator.js';
 import { buildMigrationPackage, downloadBlob } from '../../processing/zip-writer.js';
-import { readAdminExport, buildUserList, filterByUser } from '../../processing/admin-reader.js';
+import { readAdminExport, buildUserList, filterByUser, resolvePersonalData } from '../../processing/admin-reader.js';
 
 // Module-scoped: holds raw admin data so it doesn't bloat reactive state / localStorage
 let adminRawData = null;
@@ -24,52 +25,210 @@ export function render(container, stepState, globalState) {
   }
 }
 
-// ─── Personal mode (unchanged behavior) ───────────────────────────────────────
+// ─── Personal mode ────────────────────────────────────────────────────────────
+//
+// Claude exports arrive as a manifest JSON listing one ZIP per data category, each
+// with a short-lived, possibly single-use download link. Those links can't be
+// fetched from this page (claude.ai sends no CORS headers and the CSP blocks all
+// connections), so the user opens each link, then drops the ZIPs here. A legacy
+// single-ZIP export works the same way, just without a manifest.
+
+// Module-scoped so the selection survives navigating between steps
+const pending = { manifest: null, files: new Map() };
 
 function renderPersonalMode(container, stepState, globalState) {
   const hasData = !!globalState.exportData.conversations;
 
   container.innerHTML = `
     <div class="step-section">
-      <div class="step-section__title">Upload Export ZIP</div>
+      <div class="step-section__title">Upload Export Files</div>
       <div class="step-section__description">
-        Drag your Claude data export ZIP file below. Everything is processed locally in your browser --
-        no data leaves your machine.
+        Claude's export email links to a <strong>manifest</strong> file (<code>manifest-....json</code>)
+        listing several ZIP files (conversations, projects, memories, ...). Drop the manifest here to get
+        a download link for each ZIP, then drop the downloaded ZIPs. Each ZIP is processed separately and the
+        results are merged. Everything is processed locally in your browser -- no data leaves your machine.
       </div>
       <div id="a2-dropzone"></div>
     </div>
+    <div id="a2-files"></div>
     <div id="a2-progress-area"></div>
     <div id="a2-results"></div>
   `;
 
   const dzContainer = container.querySelector('#a2-dropzone');
+  const filesArea = container.querySelector('#a2-files');
   const progressArea = container.querySelector('#a2-progress-area');
   const resultsArea = container.querySelector('#a2-results');
 
+  const rerender = () => renderExportFiles(filesArea, progressArea, resultsArea);
+
   createDropzone(dzContainer, {
-    accept: '.zip',
-    label: 'Drop your Claude export ZIP here',
-    hint: 'or click to browse (accepts .zip files)',
-    onFiles: (files) => processZip(files[0], progressArea, resultsArea)
+    accept: '.zip,.json',
+    multiple: true,
+    label: 'Drop the export manifest (.json) and/or the downloaded ZIP files here',
+    hint: 'or click to browse -- you can add files in several batches',
+    onFiles: (files) => addExportFiles(files, progressArea).then(() => {
+      rerender();
+      if (allManifestFilesPresent()) processExportFiles(progressArea, resultsArea);
+    })
   });
+
+  rerender();
 
   if (hasData) {
     showResults(resultsArea, globalState);
   }
 }
 
-async function processZip(file, progressArea, resultsArea) {
+async function addExportFiles(files, progressArea) {
+  for (const file of files) {
+    if (/\.json$/i.test(file.name)) {
+      try {
+        const manifest = parseManifest(await file.text());
+        pending.manifest = manifest;
+        showWarnings(progressArea, manifest.warnings);
+      } catch (e) {
+        showWarnings(progressArea, [`${file.name}: ${e.message}`]);
+      }
+    } else if (/\.zip$/i.test(file.name)) {
+      pending.files.set(normalizeZipName(file.name), file);
+    } else {
+      showWarnings(progressArea, [`${file.name}: not a .zip or manifest .json file -- ignored.`]);
+    }
+  }
+}
+
+// Browsers rename repeat downloads to "name (1).zip"; match them to the manifest anyway
+function normalizeZipName(name) {
+  return name.toLowerCase().replace(/\s*\(\d+\)(?=\.zip$)/, '');
+}
+
+function missingManifestFiles() {
+  if (!pending.manifest) return [];
+  return pending.manifest.files.filter(f => !pending.files.has(f.filename.toLowerCase()));
+}
+
+function allManifestFilesPresent() {
+  return !!pending.manifest && missingManifestFiles().length === 0;
+}
+
+function renderExportFiles(area, progressArea, resultsArea) {
+  const { manifest } = pending;
+  if (!manifest && pending.files.size === 0) {
+    area.innerHTML = '';
+    return;
+  }
+
+  const manifestNames = new Set((manifest?.files || []).map(f => f.filename.toLowerCase()));
+  const extraFiles = [...pending.files.entries()].filter(([name]) => !manifestNames.has(name));
+  const missing = missingManifestFiles();
+  const expired = manifest?.expiresAt && manifest.expiresAt < new Date();
+
+  const manifestRows = (manifest?.files || []).map(f => {
+    const added = pending.files.has(f.filename.toLowerCase());
+    return `
+      <tr>
+        <td>${escapeHtml(f.category)}${f.part ? ` (part ${f.part + 1})` : ''}</td>
+        <td><code>${escapeHtml(f.filename)}</code></td>
+        <td>${added
+          ? `<span style="color: var(--color-success);">${icon('check-circle', 14)} Added</span>`
+          : `<span style="color: var(--color-text-muted);">Missing</span>`}</td>
+        <td>${added ? '' : `
+          <a class="btn btn--small" href="${escapeHtml(f.url)}" target="_blank" rel="noopener noreferrer">
+            ${icon('download', 12)} Download
+          </a>`}</td>
+      </tr>`;
+  }).join('');
+
+  const extraRows = extraFiles.map(([, file]) => `
+    <tr>
+      <td>${manifest ? 'not in manifest' : 'export file'}</td>
+      <td><code>${escapeHtml(file.name)}</code></td>
+      <td><span style="color: var(--color-success);">${icon('check-circle', 14)} Added</span></td>
+      <td></td>
+    </tr>`).join('');
+
+  area.innerHTML = `
+    <div class="step-section">
+      <div class="step-section__title">Export Files</div>
+      ${manifest ? `
+        <div class="info-box ${expired ? 'info-box--warning' : 'info-box--info'}" style="margin-bottom: var(--space-md);">
+          <span class="info-box__icon">${icon(expired ? 'alert-triangle' : 'info', 16)}</span>
+          <span>
+            ${expired
+              ? 'These download links have expired (they last 24 hours). Request a new export if you have not downloaded every file yet.'
+              : `Download links expire ${manifest.expiresAt ? escapeHtml(manifest.expiresAt.toLocaleString()) : 'within 24 hours'}
+                 and may only work once -- download each file completely and keep it.`}
+            Each link opens in a new tab using your claude.ai login.
+          </span>
+        </div>` : ''}
+      <table class="user-picker-table">
+        <thead><tr><th>Category</th><th>File</th><th>Status</th><th></th></tr></thead>
+        <tbody>${manifestRows}${extraRows}</tbody>
+      </table>
+      <div class="step-actions" style="gap: var(--space-sm);">
+        ${missing.length > 0 && !expired ? `
+          <button class="btn" id="a2-open-all">${icon('external-link', 14)} Open ${missing.length} download link${missing.length === 1 ? '' : 's'}</button>` : ''}
+        <button class="btn btn--primary" id="a2-process" ${pending.files.size === 0 ? 'disabled' : ''}>
+          ${icon('play', 14)} Process ${pending.files.size} file${pending.files.size === 1 ? '' : 's'}
+        </button>
+        <button class="btn btn--ghost" id="a2-clear">Clear</button>
+      </div>
+      <div id="a2-popup-note"></div>
+    </div>
+  `;
+
+  area.querySelector('#a2-open-all')?.addEventListener('click', () => {
+    let blocked = 0;
+    for (const f of missing) {
+      const win = window.open(f.url, '_blank');
+      if (win) win.opener = null;
+      else blocked++;
+    }
+    if (blocked > 0) {
+      area.querySelector('#a2-popup-note').innerHTML = `
+        <div class="info-box info-box--warning" style="margin-top: var(--space-sm);">
+          <span class="info-box__icon">${icon('alert-triangle', 16)}</span>
+          <span>Your browser blocked ${blocked} pop-up${blocked === 1 ? '' : 's'}. Allow pop-ups for this page,
+          or use the individual Download buttons above.</span>
+        </div>`;
+      if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+  });
+
+  area.querySelector('#a2-process').addEventListener('click', () => {
+    if (missing.length > 0 && !confirm(
+      `${missing.length} file(s) from the manifest have not been added (${missing.map(f => f.category).join(', ')}). ` +
+      'That data will be missing from the migration package. Process anyway?'
+    )) return;
+    processExportFiles(progressArea, resultsArea);
+  });
+
+  area.querySelector('#a2-clear').addEventListener('click', () => {
+    pending.manifest = null;
+    pending.files.clear();
+    renderExportFiles(area, progressArea, resultsArea);
+  });
+
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function processExportFiles(progressArea, resultsArea) {
+  const files = [...pending.files.values()];
+  if (files.length === 0) return;
+
   const progressIndicator = createProgressIndicator(progressArea);
   resultsArea.innerHTML = '';
 
   try {
-    const raw = await readExportZip(file, (phase, pct) => {
-      progressIndicator.update(phase, pct);
+    const exportFiles = await readExportZips(files, (phase, pct) => {
+      progressIndicator.update(phase, Math.round(pct * 0.6));
     });
 
     progressIndicator.update('Parsing conversations...', 65);
     await tick();
-    const conversations = parseConversations(raw);
+    const conversations = parseConversations(exportFiles.conversations);
+    const { memory, projects } = resolvePersonalData(exportFiles);
 
     progressIndicator.update('Extracting artifacts...', 75);
     await tick();
@@ -89,15 +248,22 @@ async function processZip(file, progressArea, resultsArea) {
     setExportData('artifactIndex', buildArtifactIndex(artifacts));
     setExportData('contextDocument', contextDocument);
     setExportData('memoryScript', memoryScript);
+    setExportData('userMemory', memory);
+    setExportData('userProjects', projects);
+    setExportData('rawSource', { kind: 'zips', files });
 
     const stats = {
       conversationCount: conversations.length,
       messageCount: conversations.reduce((n, c) => n + c.chat_messages.length, 0),
-      artifactCount: artifacts.length
+      artifactCount: artifacts.length,
+      projectCount: projects.length,
+      hasMemory: !!memory,
+      sourceFiles: files.map(f => f.name)
     };
     updateStep('a2', { completed: true, stats });
 
-    progressIndicator.complete('Processing complete');
+    progressIndicator.complete(`Processing complete (${files.length} file${files.length === 1 ? '' : 's'})`);
+    showWarnings(progressArea, exportFiles.warnings);
     showResults(resultsArea, getState());
 
   } catch (err) {
@@ -196,16 +362,7 @@ async function processAdminUpload(files, progressArea, userPickerArea, resultsAr
 
     progressIndicator.complete(`Loaded ${data.conversations.length} conversations across ${userList.length} users`);
 
-    // Show warnings
-    if (data.warnings.length > 0) {
-      const warningHtml = data.warnings.map(w =>
-        `<div class="info-box info-box--warning" style="margin-top: var(--space-sm);">
-          <span class="info-box__icon">${icon('alert-triangle', 16)}</span>
-          <span>${escapeHtml(w)}</span>
-        </div>`
-      ).join('');
-      progressArea.insertAdjacentHTML('beforeend', warningHtml);
-    }
+    showWarnings(progressArea, data.warnings);
 
     renderUserPicker(userPickerArea, progressArea, resultsArea, getState());
 
@@ -280,7 +437,7 @@ async function processSelectedUser(userUuid, pickerArea, progressArea, resultsAr
     progressIndicator.update('Filtering user data...', 20);
     await tick();
 
-    const { conversations: rawConvos, memory, projects } = filterByUser(adminRawData, userUuid);
+    const { conversations: rawConvos, memory, projects, memoryEntry } = filterByUser(adminRawData, userUuid);
 
     progressIndicator.update('Parsing conversations...', 40);
     await tick();
@@ -308,11 +465,22 @@ async function processSelectedUser(userUuid, pickerArea, progressArea, resultsAr
     setExportData('memoryScript', memoryScript);
     setExportData('userMemory', memory);
     setExportData('userProjects', projects);
+    setExportData('rawSource', {
+      kind: 'json',
+      files: {
+        'conversations.json': rawConvos,
+        'projects.json': projects,
+        'memories.json': memoryEntry ? [memoryEntry] : [],
+        'user.json': adminRawData.users.find(u => u.uuid === userUuid) || { uuid: userUuid }
+      }
+    });
 
     const stats = {
       conversationCount: conversations.length,
       messageCount: conversations.reduce((n, c) => n + c.chat_messages.length, 0),
-      artifactCount: artifacts.length
+      artifactCount: artifacts.length,
+      projectCount: projects.length,
+      hasMemory: !!memory
     };
     updateStep('a2', { completed: true, stats });
 
@@ -340,7 +508,7 @@ async function processSelectedUser(userUuid, pickerArea, progressArea, resultsAr
 // ─── Shared results display ───────────────────────────────────────────────────
 
 function showResults(resultsArea, state) {
-  const { conversations, artifacts, contextDocument, memoryScript, userProjects } = state.exportData;
+  const { conversations, artifacts, userMemory, userProjects } = state.exportData;
   if (!conversations) return;
 
   const { recent, archive } = categorizeByAge(conversations);
@@ -412,6 +580,11 @@ function showResults(resultsArea, state) {
           ${icon('folder', 14)} artifacts/
           <span class="output-tree__count">${(artifacts || []).length} files</span>
         </div>
+        ${userMemory ? `
+        <div class="output-tree__item output-tree__item--folder" style="--depth:1">
+          ${icon('folder', 14)} memory/
+        </div>
+        ` : ''}
         ${(userProjects || []).length > 0 ? `
         <div class="output-tree__item output-tree__item--folder" style="--depth:1">
           ${icon('folder', 14)} projects/
@@ -423,6 +596,10 @@ function showResults(resultsArea, state) {
         </div>
         <div class="output-tree__item output-tree__item--file" style="--depth:1">
           ${icon('file-text', 14)} memory-import-script.txt
+        </div>
+        <div class="output-tree__item output-tree__item--folder" style="--depth:1">
+          ${icon('folder', 14)} raw/
+          <span class="output-tree__count">original export data</span>
         </div>
       </div>
     </div>
@@ -450,6 +627,18 @@ function showResults(resultsArea, state) {
     if (typeof lucide !== 'undefined') lucide.createIcons();
   });
 
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function showWarnings(area, warnings) {
+  if (!warnings || warnings.length === 0) return;
+  const warningHtml = warnings.map(w =>
+    `<div class="info-box info-box--warning" style="margin-top: var(--space-sm);">
+      <span class="info-box__icon">${icon('alert-triangle', 16)}</span>
+      <span>${escapeHtml(w)}</span>
+    </div>`
+  ).join('');
+  area.insertAdjacentHTML('beforeend', warningHtml);
   if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 

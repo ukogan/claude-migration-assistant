@@ -4,6 +4,8 @@
  * 2. Regex on text field (fallback for older exports)
  */
 
+import { uniqueName } from '../utils.js';
+
 const TYPE_TO_EXT = {
   'application/vnd.ant.react': 'jsx',
   'application/vnd.ant.code': null,  // Use language field
@@ -51,6 +53,7 @@ export function extractArtifacts(conversations) {
   const artifactMap = new Map();
 
   for (const conv of conversations) {
+    // Messages are already in chronological order, so commands apply in sequence
     for (const msg of conv.chat_messages) {
       if (msg.sender !== 'assistant') continue;
 
@@ -62,37 +65,115 @@ export function extractArtifacts(conversations) {
     }
   }
 
-  return Array.from(artifactMap.values());
+  const artifacts = Array.from(artifactMap.values());
+  const usedNames = new Set();
+  for (const art of artifacts) {
+    art.extension = getExtension(art.type, art.language, art.path);
+    art.fileName = uniqueName(buildFileName(art), usedNames);
+  }
+  return artifacts;
+}
+
+// Artifact identifiers are only unique within a conversation ("todo-app" is reused
+// across many chats), so key by conversation + identifier.
+function artifactKey(conv, id) {
+  return `${conv.uuid}:${id}`;
+}
+
+function getOrCreate(artifactMap, conv, id, msg, method) {
+  const key = artifactKey(conv, id);
+  let art = artifactMap.get(key);
+  if (!art) {
+    art = {
+      id: key,
+      identifier: id,
+      title: 'Untitled',
+      type: 'text/plain',
+      language: null,
+      path: null,
+      content: '',
+      versions: [],
+      incomplete: false,
+      sourceConversationId: conv.uuid,
+      sourceConversationName: conv.name,
+      timestamp: msg.created_at,
+      extractionMethod: method
+    };
+    artifactMap.set(key, art);
+  }
+  return art;
+}
+
+function recordVersion(art, msg, command) {
+  art.timestamp = msg.created_at || art.timestamp;
+  art.versions.push({ command, timestamp: msg.created_at, content: art.content });
+}
+
+function applyEdit(art, oldStr, newStr) {
+  if (typeof oldStr === 'string' && oldStr && art.content.includes(oldStr)) {
+    art.content = art.content.replace(oldStr, () => newStr ?? '');
+  } else {
+    // Base content is missing or diverged; keep what we have and flag it
+    art.incomplete = true;
+  }
 }
 
 function extractFromContent(msg, conv, artifactMap) {
   if (!msg.content) return;
 
   for (const item of msg.content) {
-    if (item.type !== 'tool_use' || item.name !== 'artifacts' || !item.input) continue;
-
+    if (item.type !== 'tool_use' || !item.input || typeof item.input !== 'object') continue;
     const input = item.input;
-    const id = input.id || input.version_uuid || `gen-${Math.random().toString(36).slice(2, 10)}`;
 
-    const artifact = {
-      id,
-      title: input.title || 'Untitled',
-      type: input.type || 'text/plain',
-      language: input.language || null,
-      content: input.content || '',
-      sourceConversationId: conv.uuid,
-      sourceConversationName: conv.name,
-      timestamp: msg.created_at,
-      extractionMethod: 'structured'
-    };
+    if (item.name === 'artifacts') {
+      const id = input.id || input.version_uuid || item.id || `gen-${Math.random().toString(36).slice(2, 10)}`;
+      const art = getOrCreate(artifactMap, conv, String(id), msg, 'structured');
+      if (input.title) art.title = input.title;
+      if (input.type) art.type = input.type;
+      if (input.language) art.language = input.language;
 
-    artifact.extension = getExtension(artifact.type, artifact.language);
-    artifact.fileName = buildFileName(artifact);
-
-    // Keep latest version by ID
-    const existing = artifactMap.get(id);
-    if (!existing || artifact.timestamp > existing.timestamp) {
-      artifactMap.set(id, artifact);
+      const command = input.command || 'create';
+      if (command === 'update') {
+        applyEdit(art, input.old_str, input.new_str);
+      } else if (typeof input.content === 'string') {
+        art.content = input.content;
+      } else {
+        continue;
+      }
+      recordVersion(art, msg, command);
+    } else if (item.name === 'create_file' && input.path && typeof input.file_text === 'string') {
+      // File-creation tool (computer use / "create files" feature)
+      const art = getOrCreate(artifactMap, conv, String(input.path), msg, 'file');
+      art.path = String(input.path);
+      art.title = art.path.split('/').pop() || 'Untitled';
+      art.content = input.file_text;
+      recordVersion(art, msg, 'create_file');
+    } else if (item.name === 'Write' && input.file_path && typeof input.content === 'string') {
+      // Claude Code style file tool
+      const art = getOrCreate(artifactMap, conv, String(input.file_path), msg, 'file');
+      art.path = String(input.file_path);
+      art.title = art.path.split('/').pop() || 'Untitled';
+      art.content = input.content;
+      recordVersion(art, msg, 'write');
+    } else if (item.name === 'Edit' && input.file_path) {
+      const art = artifactMap.get(artifactKey(conv, String(input.file_path)));
+      if (!art) continue;
+      applyEdit(art, input.old_string, input.new_string);
+      recordVersion(art, msg, 'edit');
+    } else if (item.name === 'visualize:show_widget' && typeof input.widget_code === 'string') {
+      // Inline visual widgets
+      const id = item.id || `widget-${Math.random().toString(36).slice(2, 10)}`;
+      const art = getOrCreate(artifactMap, conv, String(id), msg, 'widget');
+      art.title = input.title || 'Widget';
+      art.type = 'text/html';
+      art.content = input.widget_code;
+      recordVersion(art, msg, 'create');
+    } else if (item.name === 'str_replace' && input.path) {
+      const key = artifactKey(conv, String(input.path));
+      const art = artifactMap.get(key);
+      if (!art) continue; // Edit of a file we never saw created (e.g. an uploaded file)
+      applyEdit(art, input.old_str, input.new_str);
+      recordVersion(art, msg, 'str_replace');
     }
   }
 }
@@ -115,24 +196,16 @@ function extractFromText(msg, conv, artifactMap) {
 
     if (!identifier) continue;
 
-    // Only add if not already found via structured path
-    if (artifactMap.has(identifier)) continue;
+    // Skip if this message already produced the artifact via the structured path
+    const existing = artifactMap.get(artifactKey(conv, identifier));
+    if (existing && existing.versions.some(v => v.timestamp === msg.created_at)) continue;
 
-    const artifact = {
-      id: identifier,
-      title: title || 'Untitled',
-      type: type || 'text/plain',
-      language: language || null,
-      content: content.trim(),
-      sourceConversationId: conv.uuid,
-      sourceConversationName: conv.name,
-      timestamp: msg.created_at,
-      extractionMethod: 'regex'
-    };
-
-    artifact.extension = getExtension(artifact.type, artifact.language);
-    artifact.fileName = buildFileName(artifact);
-    artifactMap.set(identifier, artifact);
+    const art = getOrCreate(artifactMap, conv, identifier, msg, 'regex');
+    if (title) art.title = title;
+    if (type) art.type = type;
+    if (language) art.language = language;
+    art.content = content.trim();
+    recordVersion(art, msg, 'create');
   }
 }
 
@@ -142,7 +215,13 @@ function extractAttr(attrString, name) {
   return match ? match[1] : null;
 }
 
-function getExtension(type, language) {
+function getExtension(type, language, path) {
+  // File-tool outputs carry their own extension
+  if (path) {
+    const m = /\.([a-z0-9]{1,8})$/i.exec(path);
+    if (m) return m[1].toLowerCase();
+  }
+
   // Check type mapping first
   const fromType = TYPE_TO_EXT[type];
   if (fromType) return fromType;
@@ -159,8 +238,8 @@ function getExtension(type, language) {
 }
 
 function buildFileName(artifact) {
-  const slug = slugify(artifact.title);
-  const hash = artifact.id.slice(0, 6);
+  const slug = slugify(artifact.title.replace(/\.[a-z0-9]{1,8}$/i, ''));
+  const hash = slugify(artifact.identifier).slice(0, 6) || 'x';
   return `${slug}-${hash}.${artifact.extension}`;
 }
 
@@ -182,6 +261,11 @@ export function buildArtifactIndex(artifacts) {
     sourceConversationId: a.sourceConversationId,
     sourceConversationName: a.sourceConversationName,
     extractionMethod: a.extractionMethod,
+    identifier: a.identifier,
+    path: a.path,
+    versionCount: a.versions.length,
+    incomplete: a.incomplete,
+    timestamp: a.timestamp,
     contentLength: a.content.length
   }));
 }

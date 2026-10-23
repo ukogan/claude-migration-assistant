@@ -9,8 +9,8 @@ export const STEPS = [
   {
     id: 'a2',
     track: 'a',
-    title: 'Upload & Process ZIP',
-    subtitle: 'Upload your export ZIP for client-side processing',
+    title: 'Upload & Process Export',
+    subtitle: 'Add your export manifest and ZIP files for client-side processing',
     section: 'Track A: Automated'
   },
   {

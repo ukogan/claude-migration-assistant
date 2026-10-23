@@ -62,10 +62,17 @@ export function createMarkdownViewer(container, options = {}) {
 }
 
 function renderMarkdown(md) {
-  if (typeof marked !== 'undefined' && marked.parse) {
+  // Markdown here is built from untrusted export content (conversation titles, message
+  // excerpts), so only render HTML when a real sanitizer is available. Fail closed.
+  if (typeof marked !== 'undefined' && marked.parse && typeof DOMPurify !== 'undefined') {
     try {
+      installLinkHook();
       const raw = marked.parse(md);
-      return sanitizeHtml(raw);
+      return DOMPurify.sanitize(raw, {
+        USE_PROFILES: { html: true },
+        FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'],
+        FORBID_ATTR: ['style']
+      });
     } catch (e) {
       console.warn('Markdown parse error:', e);
     }
@@ -74,12 +81,16 @@ function renderMarkdown(md) {
   return `<pre style="white-space: pre-wrap;">${escapeHtml(md)}</pre>`;
 }
 
-function sanitizeHtml(html) {
-  // Strip script/iframe/object/embed tags and on* event attributes
-  return html
-    .replace(/<\s*(script|iframe|object|embed|form|base|meta|link)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '')
-    .replace(/<\s*(script|iframe|object|embed|form|base|meta|link)[^>]*\/?>/gi, '')
-    .replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/javascript\s*:/gi, '');
+let linkHookInstalled = false;
+function installLinkHook() {
+  if (linkHookInstalled) return;
+  linkHookInstalled = true;
+  // Links must never navigate this tab away (processed data lives only in memory)
+  DOMPurify.addHook('afterSanitizeAttributes', node => {
+    if (node.tagName === 'A' && node.hasAttribute('href')) {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
 }
 

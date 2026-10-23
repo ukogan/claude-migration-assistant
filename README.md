@@ -14,7 +14,18 @@ When you switch Claude accounts, you lose your conversation history, memory, pro
 ## Two Export Modes
 
 ### Personal Export
-For individual users. Go to Claude Settings > Privacy > Export Data, download the ZIP, and drop it into the tool.
+For individual users. Go to Claude Settings > Privacy > Export Data. Claude emails a **manifest** JSON
+(`manifest-<id>-....json`) that links to one ZIP per data category (`conversations-000.zip`,
+`projects-000.zip`, `memories-000.zip`, `light_metadata-000.zip`, `design_chats-000.zip`, ...).
+
+1. Drop the manifest into step A2. The tool lists every file with its own download link.
+2. Download each ZIP (links open in a new tab using your claude.ai login). Links expire after 24 hours
+   and may only work once, so keep the files.
+3. Drop the ZIPs in (any order, any number of batches). Each ZIP is read individually and the results
+   are merged; conversations split across parts are de-duplicated by UUID.
+
+The tool can't fetch the ZIPs itself: claude.ai doesn't allow cross-origin downloads, and the page's CSP
+blocks all network connections by design. Older single-ZIP exports still work -- drop the ZIP and click Process.
 
 ### Admin Team Export
 For team admins closing an account. The admin export produces a folder of JSON files (`conversations.json`, `users.json`, `memories.json`, `projects.json`) covering all team members. The tool lets you:
@@ -44,7 +55,7 @@ The app walks you through 10 steps in two tracks:
 
 **Track A (Automated)** -- processes the export file client-side:
 - A1: Choose export type and run the data export
-- A2: Upload and process the export (ZIP or admin JSON files)
+- A2: Upload and process the export (manifest + ZIPs, legacy ZIP, or admin JSON files)
 - A3: Review the auto-generated context document
 - A4: Review and mark important artifacts
 
@@ -62,18 +73,20 @@ In admin mode, steps B1 and B2 are auto-populated from the export data.
 
 | Data | Fidelity | Method |
 |---|---|---|
-| Conversation text | Exact copy (read-only archive) | Parsed from export JSON |
-| Artifact source code | Exact copy (as files) | Extracted from message content |
-| Memory (synthesized) | Approximate | Prompt-based capture, or auto from admin export |
-| Project structure | Approximate | Manual recreation with guided prompts |
-| Knowledge files | Exact if you have originals | Re-upload to new projects |
+| Conversation text | Exact copy (read-only archive) | Parsed from export JSON, incl. thinking, tool calls/results, citations, attachment text |
+| Artifact source code | Exact copy (as files), every version | Replays artifact create/update/rewrite and file-tool edits |
+| Memory (synthesized) | Exact when `memories.json` is present | Auto from export (personal or admin); prompt-based capture otherwise |
+| Project memory | Exact when present | From `memories.json` `project_memories` |
+| Project instructions + knowledge docs | Exact | From `projects.json` (personal or admin) |
+| Raw export data | Lossless | Original JSON copied to `raw/` in the package |
+| Binary uploads (images/PDFs) | Not available | Claude exports contain only extracted text and filenames |
 
 ## Architecture
 
 Static single-page app with no server component:
 
 ```
-index.html              # Shell with CDN deps (JSZip, Lucide, Marked)
+index.html              # Shell with CSP + SRI-pinned CDN deps (JSZip, Marked, DOMPurify, Lucide, FileSaver)
 css/
   variables.css         # Design tokens
   layout.css            # App shell layout
@@ -86,7 +99,8 @@ js/
     step-definitions.js # Step metadata
     prompts.js          # Copy-paste prompts for manual steps
   processing/
-    zip-reader.js       # Reads personal export ZIPs (JSZip)
+    manifest.js         # Validates the export manifest (claude.ai links + .zip names only)
+    zip-reader.js       # Reads each export ZIP individually and merges the results
     admin-reader.js     # Reads admin export JSON files
     conversation-parser.js
     artifact-extractor.js
@@ -101,13 +115,18 @@ js/
     steps/              # One module per step (step-a1.js .. step-b6.js)
 ```
 
-## Privacy
+## Privacy & Security
 
 All processing happens in your browser. The app:
-- Does not make any network requests (beyond loading CDN libraries)
-- Does not send your data anywhere
-- Stores only step completion state in localStorage (not conversation data)
-- Can export/import session progress as a local JSON file
+- Does not make any network requests beyond loading pinned CDN libraries. A Content-Security-Policy
+  (`connect-src 'none'`) enforces this, and every CDN script is pinned to an exact version with
+  Subresource Integrity hashes.
+- Renders export-derived Markdown only through DOMPurify (falls back to plain text if it fails to load)
+- Sanitizes every file and folder name written to the migration package (no `../` path traversal)
+- Stores step progress in localStorage. This includes your **edited context document** (step A3)
+  and **memory capture text** (step B1), so use **Reset** when finished on a shared machine.
+  Session export files contain the same data -- treat them as sensitive.
+- In admin mode, the package's `raw/` folder contains only the selected user's records
 
 ## License
 

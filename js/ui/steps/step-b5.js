@@ -49,11 +49,11 @@ export function render(container, stepState, globalState) {
         ${importantArtifacts.map(art => `
           <div class="artifact-list-item">
             <label class="checkbox" style="padding: 0;">
-              <input type="checkbox" class="checkbox__input" data-artifact="${art.id}"
+              <input type="checkbox" class="checkbox__input" data-artifact="${escapeHtml(art.id)}"
                 ${uploaded[art.id] ? 'checked' : ''}>
             </label>
             <span class="artifact-list-item__title">${escapeHtml(art.title)}</span>
-            <span class="artifact-list-item__type">${art.extension}</span>
+            <span class="artifact-list-item__type">${escapeHtml(art.extension)}</span>
             <span class="artifact-list-item__meta">${escapeHtml(art.sourceConversationName)}</span>
           </div>
         `).join('')}

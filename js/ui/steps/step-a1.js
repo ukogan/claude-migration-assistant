@@ -15,7 +15,7 @@ export function render(container, stepState, globalState) {
         <button class="mode-picker__option ${currentMode === 'personal' ? 'mode-picker__option--selected' : ''}" data-mode="personal">
           <span class="mode-picker__icon">${icon('user', 24)}</span>
           <span class="mode-picker__label">Personal Export</span>
-          <span class="mode-picker__desc">Single-user ZIP from Settings > Privacy > Export Data</span>
+          <span class="mode-picker__desc">Manifest + ZIP files from Settings > Privacy > Export Data</span>
         </button>
         <button class="mode-picker__option ${currentMode === 'admin' ? 'mode-picker__option--selected' : ''}" data-mode="admin">
           <span class="mode-picker__icon">${icon('users', 24)}</span>
@@ -67,13 +67,14 @@ export function render(container, stepState, globalState) {
         </div>
       `;
     } else {
-      labelEl.textContent = 'I have downloaded my Claude data export ZIP';
+      labelEl.textContent = 'I have my export email (manifest and/or ZIP files)';
       instructionsEl.innerHTML = `
         <div class="step-section">
           <div class="step-section__title">Instructions</div>
           <div class="step-section__description">
-            Export your data from the old Claude account. This is Claude's native export feature
-            that creates a ZIP file containing all your conversations.
+            Export your data from the old Claude account. Claude's native export produces a
+            <strong>manifest</strong> JSON file that links to several ZIP files -- one per data category
+            (conversations, projects, memories, and more).
           </div>
           <ol style="padding-left: var(--space-xl); margin-bottom: var(--space-lg); line-height: 2;">
             <li>Open your <strong>old Claude account</strong></li>
@@ -81,7 +82,7 @@ export function render(container, stepState, globalState) {
             <li>Navigate to <strong>Privacy</strong> section</li>
             <li>Click <strong>Export Data</strong></li>
             <li>Wait for the confirmation email (minutes to hours)</li>
-            <li>Download the ZIP file from the link in the email</li>
+            <li>Download the <strong>manifest</strong> JSON from the email (you'll get links to each ZIP in the next step)</li>
           </ol>
           <a href="https://claude.ai/settings" target="_blank" rel="noopener" class="btn" style="margin-bottom: var(--space-lg);">
             ${icon('external-link', 14)}
@@ -89,8 +90,8 @@ export function render(container, stepState, globalState) {
           </a>
           <div class="info-box info-box--info">
             <span class="info-box__icon">${icon('info', 16)}</span>
-            <span>The export is all-or-nothing. You cannot selectively export specific conversations.
-            Deleted conversations are not included in the export.</span>
+            <span>Download links expire after 24 hours and may only work once, so download every ZIP
+            completely and keep the files. The export is all-or-nothing, and deleted conversations are not included.</span>
           </div>
         </div>
       `;
@@ -120,6 +121,7 @@ export function render(container, stepState, globalState) {
         setExportData('selectedUserUuid', null);
         setExportData('userMemory', null);
         setExportData('userProjects', null);
+        setExportData('rawSource', null);
         updateStep('a2', { completed: false, processing: false, progress: 0, stats: null });
       }
 
